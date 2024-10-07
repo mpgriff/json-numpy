@@ -16,7 +16,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 def default(
-    o: Any, *, fallback_default: Callable[[Any], dict[str, Any]] | None = None
+    o: Any, *, binary_threshold=100, fallback_default: Callable[[Any], dict[str, Any]] | None = None
 ) -> dict[str, Any]:
     """Encodes numpy objects to a JSON-serializable dictionary.
 
@@ -31,9 +31,13 @@ def default(
         TypeError: If the object is not JSON serializable.
     """
     if isinstance(o, (ndarray, generic)):
-        data = o.data if o.flags["C_CONTIGUOUS"] else o.tobytes()
+        if o.size > binary_threshold:
+            data = o.data if o.flags["C_CONTIGUOUS"] else o.tobytes()
+            values = b64encode(data).decode()
+        else:
+            values = o.__repr__()
         return {
-            "__numpy__": b64encode(data).decode(),
+            "__numpy__": values,
             "dtype": dtype_to_descr(o.dtype),
             "shape": o.shape,
         }
@@ -55,7 +59,10 @@ def object_hook(dct: dict) -> dict | ndarray | generic:
         dict | np.ndarray | np.generic: The decoded numpy object or the original dictionary.
     """
     if "__numpy__" in dct:
-        np_obj = frombuffer(b64decode(dct["__numpy__"]), descr_to_dtype(dct["dtype"]))
+        if dct['__numpy__'].startswith('array'):
+            np_obj = eval('np.'+dct['__numpy__']).astype(dct['dtype'])
+        else:
+            np_obj = frombuffer(b64decode(dct["__numpy__"]), descr_to_dtype(dct["dtype"]))
         return np_obj.reshape(shape) if (shape := dct["shape"]) else np_obj[0]
     return dct
 
