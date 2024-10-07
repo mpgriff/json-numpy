@@ -35,7 +35,7 @@ def default(
             data = o.data if o.flags["C_CONTIGUOUS"] else o.tobytes()
             values = b64encode(data).decode()
         else:
-            values = o.__repr__()
+            values = ' '.join(o.__repr__().replace('\n', '').split())
         return {
             "__numpy__": values,
             "dtype": dtype_to_descr(o.dtype),
