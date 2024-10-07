@@ -8,7 +8,7 @@ from base64 import b64decode, b64encode
 from functools import partial
 from typing import TYPE_CHECKING, Any, Callable
 
-from numpy import frombuffer, generic, ndarray
+from numpy import frombuffer, generic, ndarray, array
 from numpy.lib.format import descr_to_dtype, dtype_to_descr
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -60,7 +60,7 @@ def object_hook(dct: dict) -> dict | ndarray | generic:
     """
     if "__numpy__" in dct:
         if dct['__numpy__'].startswith('array'):
-            np_obj = eval('np.'+dct['__numpy__']).astype(dct['dtype'])
+            np_obj = eval(dct['__numpy__']).astype(dct['dtype'])
         else:
             np_obj = frombuffer(b64decode(dct["__numpy__"]), descr_to_dtype(dct["dtype"]))
         return np_obj.reshape(shape) if (shape := dct["shape"]) else np_obj[0]
