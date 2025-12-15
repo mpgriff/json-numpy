@@ -8,7 +8,7 @@ from base64 import b64decode, b64encode
 from functools import partial
 from typing import TYPE_CHECKING, Any, Callable
 
-from numpy import frombuffer, generic, ndarray, array
+from numpy import frombuffer, generic, ndarray, array, allclose
 from numpy.lib.format import descr_to_dtype, dtype_to_descr
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -125,3 +125,111 @@ def patch() -> None:
     json.loads = loads
     json.dump = dump
     json.load = load
+
+patch()
+
+from dataclasses import dataclass, replace, asdict as dataclass2dict
+from typing import List, _GenericAlias
+
+def apsu_class(cls):
+    """Decorator to add utilities to a class"""
+    def update(self, **kwargs):
+        return replace(self, **kwargs)
+
+    def save(self, fname):
+        if self.extension is not None and '.' not in fname:
+            fname = fname + '.' + self.extension
+        if self.extension is not None:
+            assert fname.endswith('.' + self.extension), 'File extension does not match class extension'
+
+        
+        other = self.copy()
+
+        for key,val in other.__dict__.items():
+            if hasattr(val, 'description') and val.description is not None:
+                if val.description.endswith(val.extension):
+                    exec(f'other.{key} = val.description')
+        
+        res = json.dumps(dataclass2dict(other), indent=4)
+        with open(fname, 'wt') as f:
+            f.write(res)
+    
+    @classmethod
+    def load(cls, fname, load_subclasses=False):
+        try:
+            with open(fname, 'rb') as f:
+                res = json.loads(f.read())
+            res['description'] = fname
+            res = cls._reinstantiate_subclasses(cls, res, load_subclasses=load_subclasses)
+            return res
+        except UnicodeDecodeError:
+            import warnings
+            warnings.warn('Could not load as json, trying to load as binary')
+            old_obj = cls._load(fname)
+            container = {}
+
+            for key in cls.__annotations__.keys():
+                if key in old_obj.__dict__.keys():
+                    container[key] = old_obj.__dict__[key]
+            return cls(**container)
+    
+    def __hash__(self):
+        descript = self.description
+        self.description = 'hash'
+        res = hash(self.__repr__())
+        self.description = descript
+        return res
+    
+    def __eq__(self, other):
+        is_equal = hash(self) == hash(other)
+        if is_equal:
+            for x in vars(self):
+                if x == 'description':
+                    continue
+                elif isinstance(vars(self)[x], ndarray):
+                    var_equal = allclose(vars(self)[x], vars(other)[x])
+                else:
+                    var_equal = (vars(self)[x] == vars(other)[x])
+                is_equal = is_equal and var_equal
+        return is_equal
+    
+    
+    def reinstantiate_subclasses(cls, d, load_subclasses=False):
+        """recursive function to get attributes back into their right classes"""
+        if hasattr(d, 'keys'):
+            assert cls.__annotations__.keys() == d.keys(), 'Keys do not match'
+            for key in d.keys():
+                if cls.__annotations__[key] != type(d[key]) and type(d[key]) == dict:
+                    d[key] = reinstantiate_subclasses(cls.__annotations__[key], d[key])
+                elif isinstance(cls.__annotations__[key], _GenericAlias):
+                    subclass = [x for x in cls.__annotations__[key].__args__]
+                    if len(subclass) < len(d[key]):
+                        subclass = subclass * len(d[key])
+                    d[key] = [reinstantiate_subclasses(const, x, load_subclasses=load_subclasses) for const, x in zip(subclass,d[key])]
+                elif cls.__annotations__[key] == ndarray:
+                    pass
+                elif cls.__annotations__[key] != type(d[key]) and type(d[key]) == str and '.' in d[key] and load_subclasses:
+                    d[key] = cls.__annotations__[key].load(d[key])
+                elif cls.__annotations__[key] != type(d[key]) and load_subclasses:
+                    d[key] = cls.__annotations__[key](**d[key])
+            return cls(**d)
+        elif isinstance(d, str) and load_subclasses:
+            return cls.load(d)
+        else:
+            return d    
+    def copy(self):
+        return replace(self)
+    
+    cls.description = cls.__name__
+    if 'extension' not in cls.__dict__:
+        cls.extension = None
+    cls.update       = update
+    cls.__hash__     = __hash__
+    cls.__eq__       = __eq__
+    cls.save         = save
+    cls.load         = load
+    cls._reinstantiate_subclasses = reinstantiate_subclasses
+    cls.copy         = copy
+
+    return dataclass(cls)
+
