@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from numpy import frombuffer, generic, ndarray, array, allclose
 from numpy.lib.format import descr_to_dtype, dtype_to_descr
+from torch import Tensor as torch_ndarray, from_numpy, allclose as torch_allclose
 
 if TYPE_CHECKING:  # pragma: no cover
     from _typeshed import SupportsRead
@@ -30,6 +31,10 @@ def default(
     Raises:
         TypeError: If the object is not JSON serializable.
     """
+    array_package = '__numpy__'
+    if isinstance(o, torch_ndarray):
+        o = o.cpu().numpy()
+        array_package = '__torch__'
     if isinstance(o, (ndarray, generic)):
         if o.size > binary_threshold:
             data = o.data if o.flags["C_CONTIGUOUS"] else o.tobytes()
@@ -37,7 +42,7 @@ def default(
         else:
             values = ' '.join(o.__repr__().replace('\n', '').split())
         return {
-            "__numpy__": values,
+            array_package: values,
             "dtype": dtype_to_descr(o.dtype),
             "shape": o.shape,
         }
@@ -64,6 +69,13 @@ def object_hook(dct: dict) -> dict | ndarray | generic:
         else:
             np_obj = frombuffer(b64decode(dct["__numpy__"]), descr_to_dtype(dct["dtype"]))
         return np_obj.reshape(shape) if (shape := dct["shape"]) else np_obj[0]
+    elif "__torch__" in dct:
+        if dct['__torch__'].startswith('array'):
+            np_obj = eval(dct['__torch__']).astype(dct['dtype'])
+        else:
+            np_obj = frombuffer(b64decode(dct["__torch__"]), descr_to_dtype(dct["dtype"]))
+        np_obj = np_obj.reshape(shape) if (shape := dct["shape"]) else np_obj#[0]
+        return from_numpy(np_obj.copy())
     return dct
 
 
@@ -131,7 +143,7 @@ patch()
 from dataclasses import dataclass, replace, asdict as dataclass2dict
 from typing import List, _GenericAlias
 
-def apsu_class(cls):
+def jsonable_dataclass(cls):
     """Decorator to add utilities to a class"""
     def update(self, **kwargs):
         return replace(self, **kwargs)
@@ -146,7 +158,7 @@ def apsu_class(cls):
         other = self.copy()
 
         for key,val in other.__dict__.items():
-            if hasattr(val, 'description') and val.description is not None:
+            if (hasattr(val, 'description') and val.description is not None) and (hasattr(val, 'extension') and val.extension is not None):
                 if val.description.endswith(val.extension):
                     exec(f'other.{key} = val.description')
         
@@ -183,35 +195,51 @@ def apsu_class(cls):
     def __eq__(self, other):
         is_equal = hash(self) == hash(other)
         if is_equal:
-            for x in vars(self):
+            for x in self.__annotations__.keys():
+                cvar = vars(self)[x]
+                ovar = vars(other)[x]
+
                 if x == 'description':
                     continue
-                elif isinstance(vars(self)[x], ndarray):
-                    var_equal = allclose(vars(self)[x], vars(other)[x])
+                elif isinstance(cvar, ndarray):
+                    var_equal = allclose(cvar, ovar)
+                elif isinstance(cvar, torch_ndarray):
+                    var_equal = bool(torch_allclose(cvar, ovar))
                 else:
-                    var_equal = (vars(self)[x] == vars(other)[x])
+                    var_equal = (cvar == ovar)
+
                 is_equal = is_equal and var_equal
+
         return is_equal
+    
+        
     
     
     def reinstantiate_subclasses(cls, d, load_subclasses=False):
         """recursive function to get attributes back into their right classes"""
+        if cls.__base__ != object:
+            class_dict = cls.__annotations__ | cls.__base__.__annotations__
+        else:
+            class_dict = cls.__annotations__
+
         if hasattr(d, 'keys'):
-            assert cls.__annotations__.keys() == d.keys(), 'Keys do not match'
+            # assert all(class_keys == list(d.keys())), 'Keys do not match'
             for key in d.keys():
-                if cls.__annotations__[key] != type(d[key]) and type(d[key]) == dict:
-                    d[key] = reinstantiate_subclasses(cls.__annotations__[key], d[key])
-                elif isinstance(cls.__annotations__[key], _GenericAlias):
-                    subclass = [x for x in cls.__annotations__[key].__args__]
+                if class_dict[key] != type(d[key]) and type(d[key]) == dict:
+                    d[key] = reinstantiate_subclasses(class_dict[key], d[key])
+                elif isinstance(class_dict[key], _GenericAlias):
+                    subclass = [x for x in class_dict[key].__args__]
                     if len(subclass) < len(d[key]):
                         subclass = subclass * len(d[key])
                     d[key] = [reinstantiate_subclasses(const, x, load_subclasses=load_subclasses) for const, x in zip(subclass,d[key])]
-                elif cls.__annotations__[key] == ndarray:
+                elif class_dict[key] == ndarray:
                     pass
-                elif cls.__annotations__[key] != type(d[key]) and type(d[key]) == str and '.' in d[key] and load_subclasses:
-                    d[key] = cls.__annotations__[key].load(d[key])
-                elif cls.__annotations__[key] != type(d[key]) and load_subclasses:
-                    d[key] = cls.__annotations__[key](**d[key])
+                elif class_dict[key] != type(d[key]) and type(d[key]) == str and '.' in d[key] and load_subclasses:
+                    d[key] = class_dict[key].load(d[key])
+                elif class_dict[key] != type(d[key]) and load_subclasses:
+                    if d[key] is not None:
+                        d[key] = class_dict[key](**d[key])
+                    
             return cls(**d)
         elif isinstance(d, str) and load_subclasses:
             return cls.load(d)
