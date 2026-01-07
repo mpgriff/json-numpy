@@ -261,3 +261,4 @@ def jsonable_dataclass(cls):
 
     return dataclass(cls)
 
+apsu_class = jsonable_dataclass# maintain backward compatibility
