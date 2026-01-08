@@ -41,6 +41,7 @@ def default(
             values = b64encode(data).decode()
         else:
             values = ' '.join(o.__repr__().replace('\n', '').split())
+            values = values.replace(', dtype=float32', '').replace(', dtype=float64', '').replace(', dtype=int64', '').replace(', dtype=int32', '')
         return {
             array_package: values,
             "dtype": dtype_to_descr(o.dtype),
@@ -217,7 +218,7 @@ def jsonable_dataclass(cls):
     
     def reinstantiate_subclasses(cls, d, load_subclasses=False):
         """recursive function to get attributes back into their right classes"""
-        if cls.__base__ != object:
+        if cls.__base__ != (object, str) and hasattr(cls.__base__, '__annotations__'):
             class_dict = cls.__annotations__ | cls.__base__.__annotations__
         else:
             class_dict = cls.__annotations__
@@ -231,7 +232,11 @@ def jsonable_dataclass(cls):
                     subclass = [x for x in class_dict[key].__args__]
                     if len(subclass) < len(d[key]):
                         subclass = subclass * len(d[key])
-                    d[key] = [reinstantiate_subclasses(const, x, load_subclasses=load_subclasses) for const, x in zip(subclass,d[key])]
+                    if hasattr(subclass[0], '__annotations__'):
+                        d[key] = [reinstantiate_subclasses(const, x, load_subclasses=load_subclasses) for const, x in zip(subclass,d[key])]
+                    else:
+                        d[key] = [x for const, x in zip(subclass,d[key])]
+
                 elif class_dict[key] == ndarray:
                     pass
                 elif class_dict[key] != type(d[key]) and type(d[key]) == str and '.' in d[key] and load_subclasses:
